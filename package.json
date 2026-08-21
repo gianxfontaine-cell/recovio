@@ -1,0 +1,9 @@
+{
+  "name": "recovio",
+  "private": true,
+  "scripts": {
+    "dev:demo": "pnpm --filter demo dev",
+    "build:demo": "pnpm --filter demo build",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
