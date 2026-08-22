@@ -2,8 +2,14 @@
   "name": "recovio",
   "private": true,
   "scripts": {
+    "dev": "pnpm --parallel -r dev",
     "dev:demo": "pnpm --filter demo dev",
+    "dev:web": "pnpm --filter web dev",
+    "build": "pnpm -r build",
     "build:demo": "pnpm --filter demo build",
-    "typecheck": "pnpm -r typecheck"
+    "build:web": "pnpm --filter web build",
+    "typecheck": "pnpm -r typecheck",
+    "db:push": "pnpm --filter web db:push",
+    "db:studio": "pnpm --filter web db:studio"
   }
 }
