@@ -1,11 +1,16 @@
-import { auth } from "@/auth"
+import NextAuth from "next-auth"
+import authConfig from "@/auth.config"
+
+const { auth } = NextAuth(authConfig)
 
 export default auth((req) => {
   const isLoggedIn = !!req.auth
   const isOnLoginPage = req.nextUrl.pathname === "/login"
   const isAuthRoute = req.nextUrl.pathname.startsWith("/api/auth")
+  const isApiRoute = req.nextUrl.pathname.startsWith("/api/")
+  const isInvitationRoute = req.nextUrl.pathname.startsWith("/invite/")
 
-  if (isAuthRoute) return
+  if (isAuthRoute || isApiRoute || isInvitationRoute) return
 
   if (!isLoggedIn && !isOnLoginPage) {
     return Response.redirect(new URL("/login", req.nextUrl))

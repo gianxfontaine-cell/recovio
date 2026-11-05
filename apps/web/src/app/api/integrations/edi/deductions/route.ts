@@ -1,6 +1,9 @@
-import { auth } from "@/auth";
+import { requireTenantUser, recordAuditEvent } from "@/lib/access";
 import { prisma } from "@/lib/prisma";
+import { ensureDraftBackCharge } from "@/lib/back-charge";
 import { evaluateDeduction } from "@recovio/core";
+import { parseMoney } from "@/lib/money";
+import { isDemoMode } from "@/lib/mode";
 
 interface MockDeduction {
   externalId: string;
@@ -88,26 +91,23 @@ const MOCK_820: MockDeduction[] = [
 ];
 
 export async function POST() {
-  const session = await auth();
-  if (!session?.user?.email) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const access = await requireTenantUser(["ADMIN", "OPERATIONS"]);
+  if (!access.ok) return access.response;
+  if (!isDemoMode()) {
+    return Response.json({ error: "EDI fixture ingestion is available only in demo mode" }, { status: 409 });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email: session.user.email },
-    include: { tenant: true }
-  });
-
-  if (!user?.tenant) {
-    return Response.json({ error: "No tenant" }, { status: 403 });
-  }
-
-  const tenantId = user.tenant.id;
+  const tenantId = access.user.tenantId;
   let processed = 0;
   let ready = 0;
   let missing = 0;
+  let backChargesCreated = 0;
 
   for (const entry of MOCK_820) {
+    const amount = parseMoney(entry.amount);
+    if (!amount) {
+      throw new Error(`EDI deduction ${entry.externalId} has an invalid monetary amount`);
+    }
     const retailer = await prisma.retailer.upsert({
       where: {
         tenantId_code: { tenantId, code: entry.retailerCode }
@@ -149,7 +149,7 @@ export async function POST() {
     const deadlineDate = new Date(deductionDate);
     deadlineDate.setDate(deadlineDate.getDate() + retailer.disputeWindowDays);
 
-    await prisma.deduction.upsert({
+    const deduction = await prisma.deduction.upsert({
       where: {
         tenantId_retailerId_externalId: {
           tenantId,
@@ -167,7 +167,7 @@ export async function POST() {
         tenantId,
         retailerId: retailer.id,
         externalId: entry.externalId,
-        amount: entry.amount,
+        amount,
         reasonCode: entry.reasonCode,
         reasonDescription: entry.reasonDescription,
         status: evaluation.status,
@@ -178,19 +178,46 @@ export async function POST() {
         invoiceNumber: entry.invoiceNumber,
         poNumber: invoice?.poNumber ?? null,
         shipmentId: shipment?.id ?? null,
-        rawPayload: entry as any
+        rawPayload: { ...entry }
       }
     });
+
+    const backCharge = await ensureDraftBackCharge(prisma, {
+      tenantId,
+      workspaceName: access.user.tenant.name,
+      deduction: await prisma.deduction.findUniqueOrThrow({
+        where: { id: deduction.id },
+        include: {
+          retailer: { select: { name: true } },
+          shipment: {
+            select: {
+              thirdPartyLogistics: true,
+              proNumber: true,
+              bolNumber: true,
+              carrierName: true
+            }
+          }
+        }
+      })
+    });
+    if (backCharge.created) backChargesCreated++;
 
     processed++;
     if (evaluation.status === "READY_TO_DISPUTE") ready++;
     if (evaluation.status === "EVIDENCE_MISSING") missing++;
   }
 
+  await recordAuditEvent({
+    tenantId,
+    actorId: access.user.id,
+    action: "integration.edi_ingest",
+    resourceType: "deduction",
+    metadata: { processed, ready, missing, backChargesCreated, mode: "mock" }
+  });
   return Response.json({
     ok: true,
     message:
       "Ingested " + processed + " deductions: " + ready + " ready to dispute, " +
-      missing + " missing evidence"
+      missing + " missing evidence, " + backChargesCreated + " 3PL debit memo(s) created"
   });
 }

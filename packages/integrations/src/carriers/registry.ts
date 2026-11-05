@@ -4,16 +4,17 @@ import { EstesCarrierAdapter } from "./estes";
 
 export function getCarrierAdapter(
   carrierName: string,
-  mock: boolean
+  mock: boolean,
+  apiKey?: string
 ): CarrierAdapter | undefined {
   const upper = (carrierName ?? "").toUpperCase();
 
   if (upper.includes("XPO")) {
-    return new XpoCarrierAdapter(process.env.XPO_API_KEY, mock);
+    return new XpoCarrierAdapter(apiKey, mock);
   }
 
   if (upper.includes("ESTES")) {
-    return new EstesCarrierAdapter(process.env.ESTES_API_KEY, mock);
+    return new EstesCarrierAdapter(apiKey, mock);
   }
 
   return undefined;

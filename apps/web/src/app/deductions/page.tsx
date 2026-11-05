@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { EdiSync } from "@/components/edi-sync";
+import { formatMoney } from "@/lib/money";
+import { isDemoMode } from "@/lib/mode";
 
 export const dynamic = "force-dynamic";
 
@@ -47,9 +49,9 @@ export default async function DeductionsPage() {
             Auto-matched, scored, and fault-assigned by the Recovio engine.
           </p>
         </div>
-        <div className="w-72">
-          <EdiSync />
-        </div>
+        {["ADMIN", "OPERATIONS"].includes(user.role) ? (
+          <div className="w-72"><EdiSync demoMode={isDemoMode()} /></div>
+        ) : null}
       </div>
 
       {deductions.length === 0 ? (
@@ -93,7 +95,7 @@ export default async function DeductionsPage() {
                     {deduction.reasonDescription}
                   </td>
                   <td className="px-5 py-4 font-semibold">
-                    {"$" + Math.abs(deduction.amount).toLocaleString()}
+                    {formatMoney(deduction.amount.abs())}
                   </td>
                   <td className="px-5 py-4">
                     {deduction.faultParty.replace("_", " ")}

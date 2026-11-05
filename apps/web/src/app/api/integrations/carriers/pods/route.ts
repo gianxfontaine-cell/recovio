@@ -1,28 +1,17 @@
-import { auth } from "@/auth";
+import { requireTenantUser, recordAuditEvent } from "@/lib/access";
+import { decryptCredentials } from "@/lib/credentials";
 import { prisma } from "@/lib/prisma";
 import { getCarrierAdapter } from "@recovio/integrations";
+import { isDemoMode } from "@/lib/mode";
 
 export async function POST() {
-  const session = await auth();
-  if (!session?.user?.email) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const user = await prisma.user.findUnique({
-    where: { email: session.user.email },
-    include: { tenant: true }
-  });
-
-  if (!user?.tenant) {
-    return Response.json({ error: "No tenant" }, { status: 403 });
-  }
-
-  const mock =
-    process.env.NETSUITE_MOCK === "true" || !process.env.XPO_API_KEY;
+  const access = await requireTenantUser(["ADMIN", "OPERATIONS"]);
+  if (!access.ok) return access.response;
+  const mock = isDemoMode();
 
   const shipments = await prisma.shipment.findMany({
     where: {
-      tenantId: user.tenant.id,
+      tenantId: access.user.tenantId,
       podSigned: false,
       proNumber: { not: null }
     }
@@ -37,7 +26,28 @@ export async function POST() {
       continue;
     }
 
-    const adapter = getCarrierAdapter(shipment.carrierName ?? "", mock);
+    const provider = (shipment.carrierName ?? "").toUpperCase().includes("XPO") ? "xpo" :
+      (shipment.carrierName ?? "").toUpperCase().includes("ESTES") ? "estes" : null;
+    if (!provider) {
+      missing++;
+      continue;
+    }
+    let apiKey: string | undefined;
+    if (!mock) {
+      const saved = await prisma.integrationCredential.findUnique({
+        where: { tenantId_provider: { tenantId: access.user.tenantId, provider } }
+      });
+      if (!saved) {
+        return Response.json({ error: `Configure ${provider} credentials before retrieving PODs` }, { status: 409 });
+      }
+      apiKey = decryptCredentials(
+        saved.encryptedCredentials,
+        `${access.user.tenantId}:${provider}`
+      ).apiKey;
+      if (!apiKey) return Response.json({ error: `Saved ${provider} credentials are incomplete` }, { status: 409 });
+    }
+
+    const adapter = getCarrierAdapter(shipment.carrierName ?? "", mock, apiKey);
     if (!adapter) {
       missing++;
       continue;
@@ -62,6 +72,13 @@ export async function POST() {
     }
   }
 
+  await recordAuditEvent({
+    tenantId: access.user.tenantId,
+    actorId: access.user.id,
+    action: "integration.carrier_pods_sync",
+    resourceType: "shipment",
+    metadata: { retrieved, missing, mode: mock ? "mock" : "production" }
+  });
   return Response.json({
     ok: true,
     message: "Retrieved " + retrieved + " PODs, " + missing + " still missing"

@@ -19,16 +19,19 @@ export function DisputeActions({
   deductionId,
   externalId,
   canDispute,
-  existingLetter
+  existingLetter,
+  existingStatus
 }: {
   deductionId: string;
   externalId: string;
   canDispute: boolean;
   existingLetter: string | null;
+  existingStatus: string | null;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [letter, setLetter] = useState<string | null>(existingLetter);
+  const [status, setStatus] = useState<string | null>(existingStatus);
   const [message, setMessage] = useState("");
 
   async function generate() {
@@ -43,8 +46,8 @@ export function DisputeActions({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Generation failed");
       setLetter(data.letterHtml);
-      downloadFile("Recovio-Dispute-" + externalId + ".html", data.letterHtml);
-      setMessage("Dispute package generated, downloaded, and saved to this tenant.");
+      setStatus(data.status);
+      setMessage("Dispute submitted for independent review. The approved package will be available to download.");
       router.refresh();
     } catch (error: any) {
       setMessage(error.message);
@@ -55,13 +58,17 @@ export function DisputeActions({
 
   return (
     <div className="space-y-3">
-      {letter ? (
+      {letter && status === "APPROVED" ? (
         <button
           onClick={() => downloadFile("Recovio-Dispute-" + externalId + ".html", letter)}
           className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold hover:bg-white/10"
         >
           Download Dispute Letter
         </button>
+      ) : status === "PENDING_REVIEW" ? (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+          This dispute package is awaiting review and cannot be filed yet.
+        </p>
       ) : (
         <button
           onClick={generate}
@@ -83,10 +90,9 @@ export function DisputeActions({
         </p>
       ) : null}
 
-      {letter ? (
+      {letter && status === "APPROVED" ? (
         <p className="text-xs text-emerald-300">
-          A Dispute record is saved for this deduction. Open the file and
-          print to PDF to file it with the retailer.
+          This dispute was approved. Open the file and print to PDF to file it with the retailer.
         </p>
       ) : null}
 

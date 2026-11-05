@@ -1,7 +1,7 @@
 export interface DisputeLetterInput {
   retailerName: string;
   externalId: string;
-  amount: number;
+  amount: number | string;
   reasonDescription: string;
   invoiceNumber: string | null;
   poNumber: string | null;
@@ -13,10 +13,11 @@ export interface DisputeLetterInput {
 }
 
 export function buildDisputeParagraphs(input: DisputeLetterInput): string[] {
+  const amount = formatAmount(input.amount);
   const paragraphs: string[] = [];
 
   paragraphs.push(
-    `We are disputing ${input.retailerName} deduction ${input.externalId} in the amount of $${Math.abs(input.amount).toLocaleString()} related to invoice ${input.invoiceNumber ?? "unknown"} and PO ${input.poNumber ?? "unknown"}.`
+    `We are disputing ${input.retailerName} deduction ${input.externalId} in the amount of ${amount} related to invoice ${input.invoiceNumber ?? "unknown"} and PO ${input.poNumber ?? "unknown"}.`
   );
 
   paragraphs.push(
@@ -48,6 +49,27 @@ export function buildDisputeParagraphs(input: DisputeLetterInput): string[] {
   return paragraphs;
 }
 
+function formatAmount(value: number | string): string {
+  const match = /^-?(\d+)(?:\.(\d{1,2}))?$/.exec(String(value))
+  if (!match) throw new Error("Dispute amount must be a monetary value with at most two decimal places")
+  const whole = new Intl.NumberFormat("en-US").format(BigInt(match[1]))
+  const cents = (match[2] ?? "").padEnd(2, "0")
+  return `$${whole}.${cents}`
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, character => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    }
+    return entities[character]
+  })
+}
+
 export function buildDisputeLetterHtml(input: DisputeLetterInput): string {
   const today = new Date().toLocaleDateString("en-US", {
     year: "numeric",
@@ -56,15 +78,16 @@ export function buildDisputeLetterHtml(input: DisputeLetterInput): string {
   });
 
   const paragraphs = buildDisputeParagraphs(input)
-    .map(p => "<p>" + p + "</p>")
+    .map(p => "<p>" + escapeHtml(p) + "</p>")
     .join("\n");
+  const amount = formatAmount(input.amount)
 
   const shipmentRows =
     input.proNumber || input.bolNumber
       ? [
-          input.proNumber ? "<tr><td class='label'>PRO number</td><td>" + input.proNumber + "</td></tr>" : "",
-          input.bolNumber ? "<tr><td class='label'>BOL number</td><td>" + input.bolNumber + "</td></tr>" : "",
-          input.carrierName ? "<tr><td class='label'>Carrier</td><td>" + input.carrierName + "</td></tr>" : ""
+          input.proNumber ? "<tr><td class='label'>PRO number</td><td>" + escapeHtml(input.proNumber) + "</td></tr>" : "",
+          input.bolNumber ? "<tr><td class='label'>BOL number</td><td>" + escapeHtml(input.bolNumber) + "</td></tr>" : "",
+          input.carrierName ? "<tr><td class='label'>Carrier</td><td>" + escapeHtml(input.carrierName) + "</td></tr>" : ""
         ].join("\n")
       : "";
 
@@ -73,7 +96,7 @@ export function buildDisputeLetterHtml(input: DisputeLetterInput): string {
     "<html lang='en'>",
     "<head>",
     "<meta charset='utf-8' />",
-    "<title>Dispute " + input.externalId + "</title>",
+    "<title>Dispute " + escapeHtml(input.externalId) + "</title>",
     "<style>",
     "body { font-family: Arial, Helvetica, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 40px; }",
     ".letter { max-width: 720px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 48px; }",
@@ -97,14 +120,14 @@ export function buildDisputeLetterHtml(input: DisputeLetterInput): string {
     "<span class='tag'>Automated Deduction Recovery</span>",
     "</div>",
     "<p class='meta'>" + today + "</p>",
-    "<h1>Re: Formal dispute of deduction " + input.externalId + "</h1>",
-    "<p class='meta'>To: " + input.retailerName + " Vendor Disputes / Accounts Payable</p>",
+    "<h1>Re: Formal dispute of deduction " + escapeHtml(input.externalId) + "</h1>",
+    "<p class='meta'>To: " + escapeHtml(input.retailerName) + " Vendor Disputes / Accounts Payable</p>",
     paragraphs,
     "<table>",
-    "<tr><td class='label'>Deduction</td><td>" + input.externalId + "</td></tr>",
-    "<tr><td class='label'>Amount disputed</td><td>$" + Math.abs(input.amount).toLocaleString() + "</td></tr>",
-    "<tr><td class='label'>PO number</td><td>" + (input.poNumber ?? "—") + "</td></tr>",
-    "<tr><td class='label'>Invoice number</td><td>" + (input.invoiceNumber ?? "—") + "</td></tr>",
+    "<tr><td class='label'>Deduction</td><td>" + escapeHtml(input.externalId) + "</td></tr>",
+    "<tr><td class='label'>Amount disputed</td><td>" + amount + "</td></tr>",
+    "<tr><td class='label'>PO number</td><td>" + escapeHtml(input.poNumber ?? "—") + "</td></tr>",
+    "<tr><td class='label'>Invoice number</td><td>" + escapeHtml(input.invoiceNumber ?? "—") + "</td></tr>",
     shipmentRows,
     "</table>",
     "<p class='signature'>Sincerely,<br/>Accounts Receivable Team<br/>Prepared automatically by Recovio</p>",

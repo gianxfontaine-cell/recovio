@@ -1,41 +1,46 @@
-import { auth } from "@/auth";
+import { requireTenantUser, recordAuditEvent } from "@/lib/access";
 import { prisma } from "@/lib/prisma";
 import { buildDisputeLetterHtml } from "@recovio/core";
 
 export async function POST(req: Request) {
-  const session = await auth();
-  if (!session?.user?.email) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const access = await requireTenantUser(["ADMIN", "FINANCE"]);
+  if (!access.ok) return access.response;
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Request body must be valid JSON" }, { status: 400 });
   }
-
-  const user = await prisma.user.findUnique({
-    where: { email: session.user.email },
-    include: { tenant: true }
-  });
-
-  if (!user?.tenant) {
-    return Response.json({ error: "No tenant" }, { status: 403 });
-  }
-
-  const body = await req.json();
-  const deductionId = body?.deductionId;
-  if (!deductionId) {
+  if (!body || typeof body !== "object" || !("deductionId" in body) ||
+      typeof body.deductionId !== "string" || !body.deductionId.trim()) {
     return Response.json({ error: "deductionId required" }, { status: 400 });
   }
 
   const deduction = await prisma.deduction.findFirst({
-    where: { id: deductionId, tenantId: user.tenant.id },
+    where: { id: body.deductionId, tenantId: access.user.tenantId },
     include: { retailer: true, shipment: true }
   });
 
   if (!deduction) {
     return Response.json({ error: "Deduction not found" }, { status: 404 });
   }
+  if (deduction.status !== "READY_TO_DISPUTE") {
+    return Response.json({ error: "Only deductions ready to dispute can be submitted for review" }, { status: 422 });
+  }
+  if (!deduction.amount.isNegative()) {
+    return Response.json({ error: "Only a negative retailer deduction can be disputed" }, { status: 422 });
+  }
+
+  const existing = await prisma.dispute.findUnique({ where: { deductionId: deduction.id } });
+  if (existing && existing.status !== "REJECTED") {
+    return Response.json({ error: `Dispute is already ${existing.status.toLowerCase().replace(/_/g, " ")}` }, { status: 409 });
+  }
 
   const letterHtml = buildDisputeLetterHtml({
     retailerName: deduction.retailer.name,
     externalId: deduction.externalId,
-    amount: deduction.amount,
+    amount: deduction.amount.toFixed(2),
     reasonDescription: deduction.reasonDescription ?? deduction.reasonCode,
     invoiceNumber: deduction.invoiceNumber,
     poNumber: deduction.poNumber,
@@ -46,24 +51,43 @@ export async function POST(req: Request) {
     faultParty: deduction.faultParty
   });
 
-  const dispute = await prisma.dispute.upsert({
-    where: { deductionId: deduction.id },
-    update: {
-      letterHtml,
-      requestedAmount: Math.abs(deduction.amount)
-    },
-    create: {
-      tenantId: user.tenant.id,
-      deductionId: deduction.id,
-      status: "GENERATED",
-      requestedAmount: Math.abs(deduction.amount),
-      letterHtml
-    }
+  const dispute = existing
+    ? await prisma.dispute.update({
+        where: { id: existing.id },
+        data: {
+          letterHtml,
+          requestedAmount: deduction.amount.abs(),
+          requestedById: access.user.id,
+          status: "PENDING_REVIEW",
+          reviewedById: null,
+          reviewedAt: null,
+          reviewNotes: null
+        }
+      })
+    : await prisma.dispute.create({
+        data: {
+          tenantId: access.user.tenantId,
+          deductionId: deduction.id,
+          requestedById: access.user.id,
+          status: "PENDING_REVIEW",
+          requestedAmount: deduction.amount.abs(),
+          letterHtml
+        }
+      });
+
+  await recordAuditEvent({
+    tenantId: access.user.tenantId,
+    actorId: access.user.id,
+    action: "dispute.submitted_for_review",
+    resourceType: "dispute",
+    resourceId: dispute.id,
+    metadata: { deductionId: deduction.id, amount: dispute.requestedAmount.toFixed(2) }
   });
 
   return Response.json({
     ok: true,
     disputeId: dispute.id,
+    status: dispute.status,
     letterHtml
   });
 }

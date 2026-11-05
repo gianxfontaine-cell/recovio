@@ -1,70 +1,114 @@
-import { auth } from "@/auth";
+import { requireTenantUser, recordAuditEvent } from "@/lib/access";
+import { decryptCredentials } from "@/lib/credentials";
 import { prisma } from "@/lib/prisma";
 import { NetSuiteClient } from "@recovio/integrations";
+import { parseMoney } from "@/lib/money";
+import { isDemoMode } from "@/lib/mode";
 
 export async function POST() {
-  const session = await auth();
-  if (!session?.user?.email) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const access = await requireTenantUser(["ADMIN", "OPERATIONS"]);
+  if (!access.ok) return access.response;
+
+  const mock = isDemoMode();
+  let credentialId: string | undefined;
+  let credentials = {
+    accountId: "MOCK",
+    consumerKey: "",
+    consumerSecret: "",
+    tokenId: "",
+    tokenSecret: ""
+  };
+  if (!mock) {
+    const saved = await prisma.integrationCredential.findUnique({
+      where: { tenantId_provider: { tenantId: access.user.tenantId, provider: "netsuite" } }
+    });
+    if (!saved) return Response.json({ error: "Configure NetSuite credentials before syncing" }, { status: 409 });
+    credentialId = saved.id;
+    const decrypted = decryptCredentials(
+      saved.encryptedCredentials,
+      `${access.user.tenantId}:netsuite`
+    );
+    const fields = ["accountId", "consumerKey", "consumerSecret", "tokenId", "tokenSecret"] as const;
+    if (fields.some(field => !decrypted[field])) {
+      return Response.json({ error: "Saved NetSuite credentials are incomplete" }, { status: 409 });
+    }
+    credentials = {
+      accountId: decrypted.accountId,
+      consumerKey: decrypted.consumerKey,
+      consumerSecret: decrypted.consumerSecret,
+      tokenId: decrypted.tokenId,
+      tokenSecret: decrypted.tokenSecret
+    };
   }
-
-  const user = await prisma.user.findUnique({
-    where: { email: session.user.email },
-    include: { tenant: true }
-  });
-
-  if (!user?.tenant) {
-    return Response.json({ error: "No tenant" }, { status: 403 });
-  }
-
-  const mock =
-    process.env.NETSUITE_MOCK === "true" || !process.env.NETSUITE_ACCOUNT_ID;
-
-  const client = new NetSuiteClient(
-    {
-      accountId: process.env.NETSUITE_ACCOUNT_ID ?? "MOCK",
-      consumerKey: process.env.NETSUITE_CONSUMER_KEY ?? "",
-      consumerSecret: process.env.NETSUITE_CONSUMER_SECRET ?? "",
-      tokenId: process.env.NETSUITE_TOKEN_ID ?? "",
-      tokenSecret: process.env.NETSUITE_TOKEN_SECRET ?? ""
-    },
-    mock
-  );
+  const client = new NetSuiteClient(credentials, mock);
 
   try {
     const invoices = await client.queryInvoices();
+    if (credentialId) {
+      await prisma.integrationCredential.update({
+        where: { id: credentialId },
+        data: { status: "CONNECTED", lastCheckedAt: new Date(), lastError: null }
+      });
+    }
 
     for (const inv of invoices) {
+      const totalAmount = parseMoney(inv.totalAmount)
+      if (!totalAmount) throw new Error("NetSuite returned an invalid invoice amount")
       await prisma.invoice.upsert({
         where: {
           tenantId_netsuiteId: {
-            tenantId: user.tenant.id,
+            tenantId: access.user.tenantId,
             netsuiteId: inv.netsuiteId
           }
         },
         update: {
-          totalAmount: inv.totalAmount,
+          totalAmount,
           poNumber: inv.poNumber,
           customerName: inv.customerName
         },
         create: {
-          tenantId: user.tenant.id,
+          tenantId: access.user.tenantId,
           netsuiteId: inv.netsuiteId,
           invoiceNumber: inv.invoiceNumber,
           poNumber: inv.poNumber,
           customerName: inv.customerName,
-          totalAmount: inv.totalAmount,
+          totalAmount,
           invoiceDate: new Date(inv.invoiceDate)
         }
       });
     }
 
+    await recordAuditEvent({
+      tenantId: access.user.tenantId,
+      actorId: access.user.id,
+      action: "integration.netsuite_sync",
+      resourceType: "invoice",
+      metadata: { count: invoices.length, mode: mock ? "mock" : "production" }
+    });
     return Response.json({
       ok: true,
       synced: invoices.length,
       mode: mock ? "mock" : "live"
     });
-  } catch (error: any) {
-    return Response.json({ error: error.message }, { status: 500 });
+  } catch (error: unknown) {
+    console.error("NetSuite sync failed", error instanceof Error ? error.name : "Unknown error");
+    if (credentialId) {
+      await prisma.integrationCredential.update({
+        where: { id: credentialId },
+        data: {
+          status: "ERROR",
+          lastCheckedAt: new Date(),
+          lastError: "Synchronization failed; run diagnostics for details."
+        }
+      });
+    }
+    await recordAuditEvent({
+      tenantId: access.user.tenantId,
+      actorId: access.user.id,
+      action: "integration.netsuite_sync_failed",
+      resourceType: "invoice",
+      metadata: { mode: mock ? "mock" : "production" }
+    });
+    return Response.json({ error: "NetSuite synchronization failed; run diagnostics for connection details" }, { status: 502 });
   }
 }

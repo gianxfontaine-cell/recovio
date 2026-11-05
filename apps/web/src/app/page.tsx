@@ -5,6 +5,8 @@ import { SyncButton } from "@/components/sync-button";
 import { CarrierSync } from "@/components/carrier-sync";
 import { EdiSync } from "@/components/edi-sync";
 import Link from "next/link";
+import { formatMoney } from "@/lib/money";
+import { isDemoMode } from "@/lib/mode";
 
 export const dynamic = "force-dynamic";
 
@@ -18,17 +20,7 @@ export default async function HomePage() {
   });
 
   if (!user?.tenant) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-100">
-        <div className="rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-8 text-center">
-          <h2 className="text-xl font-bold text-yellow-300">No Tenant Assigned</h2>
-          <p className="mt-2 text-sm text-yellow-300/80">
-            You are logged in, but not assigned to a workspace.
-            Open Prisma Studio and set your tenantId.
-          </p>
-        </div>
-      </div>
-    );
+    redirect("/onboarding");
   }
 
   const deductionCount = await prisma.deduction.count({
@@ -47,8 +39,16 @@ export default async function HomePage() {
     where: { tenantId: user.tenant.id, podSigned: true }
   });
 
+  const [backChargeCount, backChargeTotal] = await Promise.all([
+    prisma.backCharge.count({ where: { tenantId: user.tenant.id } }),
+    prisma.backCharge.aggregate({
+      where: { tenantId: user.tenant.id },
+      _sum: { amount: true }
+    })
+  ]);
+
   return (
-    <div className="mx-auto max-w-5xl px-6 py-12">
+    <div className="mx-auto max-w-6xl px-6 py-12">
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-4xl font-bold tracking-tight">
@@ -79,7 +79,7 @@ export default async function HomePage() {
           <div className="mt-3 flex items-center gap-2">
             <div className="h-2 w-2 rounded-full bg-emerald-400" />
             <span className="text-lg font-medium text-emerald-300">
-              Logged in via GitHub
+              Signed in securely
             </span>
           </div>
         </div>
@@ -110,7 +110,7 @@ export default async function HomePage() {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-blue-500/30 bg-blue-500/10 p-6">
+        {["ADMIN", "OPERATIONS"].includes(user.role) ? <div className="rounded-2xl border border-blue-500/30 bg-blue-500/10 p-6">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-blue-300">
             NetSuite Integration
           </h2>
@@ -118,9 +118,9 @@ export default async function HomePage() {
             Pull invoices from your ERP into this workspace.
           </p>
           <SyncButton />
-        </div>
+        </div> : null}
 
-        <div className="rounded-2xl border border-violet-500/30 bg-violet-500/10 p-6">
+        {["ADMIN", "OPERATIONS"].includes(user.role) ? <div className="rounded-2xl border border-violet-500/30 bg-violet-500/10 p-6">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-violet-300">
             Carrier Integration
           </h2>
@@ -128,8 +128,8 @@ export default async function HomePage() {
             Match shipments from your 3PL, then auto-retrieve Proof of
             Delivery from carriers.
           </p>
-          <CarrierSync />
-        </div>
+          <CarrierSync demoMode={isDemoMode()} />
+        </div> : null}
 
         <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-6 md:col-span-2">
           <div className="flex items-center justify-between">
@@ -154,9 +154,45 @@ export default async function HomePage() {
                 <span className="font-mono font-semibold">{deductionCount}</span>
               </div>
             </div>
-            <EdiSync />
+            {["ADMIN", "OPERATIONS"].includes(user.role) ? <EdiSync demoMode={isDemoMode()} /> : null}
           </div>
         </div>
+
+        <Link
+          href="/onboarding"
+          className="rounded-2xl border border-sky-500/30 bg-sky-500/10 p-6 transition-colors hover:bg-sky-500/15 md:col-span-2"
+        >
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-sky-300">
+            Organization onboarding
+          </h2>
+          <p className="mt-2 text-sm text-sky-100/70">
+            Manage teammates, setup progress, and customer integrations.
+          </p>
+        </Link>
+
+        <Link
+          href="/back-charges"
+          className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-6 transition-colors hover:bg-amber-500/15 md:col-span-2"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-amber-300">
+                3PL Back-charges
+              </h2>
+              <p className="mt-2 text-sm text-amber-100/70">
+                Review draft debit memos for deductions attributed to logistics partners.
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-2xl font-semibold">
+                {formatMoney(backChargeTotal._sum.amount ?? 0)}
+              </p>
+              <p className="text-xs text-amber-200/70">
+                {backChargeCount} memo{backChargeCount === 1 ? "" : "s"}
+              </p>
+            </div>
+          </div>
+        </Link>
       </div>
     </div>
   );

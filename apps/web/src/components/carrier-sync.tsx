@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-export function CarrierSync() {
+export function CarrierSync({ demoMode }: { demoMode: boolean }) {
   const router = useRouter();
   const [busy, setBusy] = useState<null | "shipments" | "pods">(null);
   const [message, setMessage] = useState("");
@@ -26,13 +26,17 @@ export function CarrierSync() {
 
   return (
     <div className="mt-4 space-y-2">
-      <button
+      {demoMode ? <button
         onClick={() => call("/api/integrations/carriers/shipments", "shipments")}
         disabled={busy !== null}
         className="w-full rounded-xl bg-violet-500 px-4 py-2.5 text-sm font-semibold text-violet-950 transition-colors hover:bg-violet-400 disabled:cursor-wait disabled:bg-slate-700 disabled:text-slate-400"
       >
         {busy === "shipments" ? "Syncing…" : "Sync Shipments from 3PL"}
-      </button>
+      </button> : (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+          Shipment fixtures are disabled in production. Carrier POD retrieval remains available for configured providers.
+        </p>
+      )}
 
       <button
         onClick={() => call("/api/integrations/carriers/pods", "pods")}

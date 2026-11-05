@@ -15,22 +15,35 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  retailers Retailer[]
-  users     User[]
+  retailers              Retailer[]
+  users                  User[]
+  backCharges            BackCharge[]
+  invitations            Invitation[]
+  integrationCredentials IntegrationCredential[]
+  auditEvents            AuditEvent[]
+  deductions             Deduction[]
+  shipments              Shipment[]
+  disputes               Dispute[]
+  evidenceRecords        EvidenceRecord[]
+  invoices               Invoice[]
 }
 
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  name          String?
-  emailVerified DateTime?
-  image         String?
-  tenantId      String?
-  tenant        Tenant?   @relation(fields: [tenantId], references: [id])
-  role          String    @default("member")
-  createdAt     DateTime  @default(now())
-  accounts      Account[]
-  sessions      Session[]
+  id                 String       @id @default(cuid())
+  email              String       @unique
+  name               String?
+  emailVerified      DateTime?
+  image              String?
+  tenantId           String?
+  tenant             Tenant?      @relation(fields: [tenantId], references: [id])
+  role               String       @default("VIEWER")
+  createdAt          DateTime     @default(now())
+  accounts           Account[]
+  sessions           Session[]
+  createdInvitations Invitation[] @relation("InvitationCreator")
+  auditEvents        AuditEvent[] @relation("AuditActor")
+
+  @@unique([tenantId, id])
 }
 
 model Retailer {
@@ -46,15 +59,16 @@ model Retailer {
   deductions Deduction[]
 
   @@unique([tenantId, code])
+  @@unique([tenantId, id])
 }
 
 model Deduction {
   id                String   @id @default(cuid())
   tenantId          String
   retailerId        String
-  retailer          Retailer @relation(fields: [retailerId], references: [id])
+  retailer          Retailer @relation(fields: [tenantId, retailerId], references: [tenantId, id])
   externalId        String
-  amount            Float
+  amount            Decimal  @db.Decimal(18, 2)
   reasonCode        String
   reasonDescription String?
   status            String   @default("NEW")
@@ -69,11 +83,37 @@ model Deduction {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  shipment Shipment? @relation(fields: [shipmentId], references: [id])
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  shipment        Shipment?        @relation(fields: [tenantId, shipmentId], references: [tenantId, id], onDelete: Restrict)
+  backCharge      BackCharge?
+  dispute         Dispute?
+  evidenceRecords EvidenceRecord[] @relation("DeductionEvidence")
 
+  @@unique([tenantId, id])
+  @@unique([tenantId, retailerId, externalId])
   @@index([tenantId, status])
   @@index([tenantId, deadlineDate])
-  @@unique([tenantId, retailerId, externalId])
+}
+
+model BackCharge {
+  id                  String   @id @default(cuid())
+  tenantId            String
+  deductionId         String   @unique
+  memoNumber          String
+  thirdPartyLogistics String
+  amount              Decimal  @db.Decimal(18, 2)
+  currency            String   @default("USD")
+  status              String   @default("DRAFT")
+  memoHtml            String   @db.Text
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deduction Deduction @relation(fields: [tenantId, deductionId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, deductionId])
+  @@unique([tenantId, memoNumber])
+  @@index([tenantId, status, createdAt])
 }
 
 model Shipment {
@@ -90,22 +130,33 @@ model Shipment {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   deductions Deduction[]
 
+  @@unique([tenantId, id])
   @@index([tenantId, proNumber])
 }
 
 model Dispute {
-  id               String   @id @default(cuid())
-  tenantId         String
-  deductionId      String   @unique
-  status           String   @default("DRAFT")
-  requestedAmount  Float
-  submissionMethod String?
+  id                 String    @id @default(cuid())
+  tenantId           String
+  deductionId        String    @unique
+  status             String    @default("DRAFT")
+  requestedAmount    Decimal   @db.Decimal(18, 2)
+  requestedById      String?
+  submissionMethod   String?
   confirmationNumber String?
-  letterHtml       String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  letterHtml         String?
+  reviewedById       String?
+  reviewedAt         DateTime?
+  reviewNotes        String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deduction Deduction @relation(fields: [tenantId, deductionId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, deductionId])
 }
 
 model EvidenceRecord {
@@ -118,8 +169,12 @@ model EvidenceRecord {
   confidence   Float?
   createdAt    DateTime @default(now())
 
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deduction Deduction @relation("DeductionEvidence", fields: [tenantId, deductionId], references: [tenantId, id], onDelete: Cascade)
+
   @@index([tenantId, deductionId])
 }
+
 model Account {
   id                String  @id @default(cuid())
   userId            String
@@ -154,6 +209,7 @@ model VerificationToken {
 
   @@unique([identifier, token])
 }
+
 model Invoice {
   id            String   @id @default(cuid())
   tenantId      String
@@ -161,12 +217,64 @@ model Invoice {
   invoiceNumber String
   poNumber      String?
   customerName  String?
-  totalAmount   Float
+  totalAmount   Decimal  @db.Decimal(18, 2)
   invoiceDate   DateTime
   status        String   @default("SYNCED")
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   @@unique([tenantId, netsuiteId])
   @@index([tenantId, invoiceNumber])
+}
+
+model Invitation {
+  id          String    @id @default(cuid())
+  tenantId    String
+  email       String
+  role        String
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdById String
+  createdAt   DateTime  @default(now())
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User   @relation("InvitationCreator", fields: [tenantId, createdById], references: [tenantId, id], onDelete: Restrict)
+
+  @@index([tenantId, email, acceptedAt])
+}
+
+model IntegrationCredential {
+  id                   String    @id @default(cuid())
+  tenantId             String
+  provider             String
+  encryptedCredentials String    @db.Text
+  status               String    @default("CONFIGURED")
+  lastCheckedAt        DateTime?
+  lastError            String?
+  updatedAt            DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, provider])
+  @@index([tenantId, status])
+}
+
+model AuditEvent {
+  id           String   @id @default(cuid())
+  tenantId     String
+  actorId      String
+  action       String
+  resourceType String
+  resourceId   String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actor  User   @relation("AuditActor", fields: [tenantId, actorId], references: [tenantId, id], onDelete: Restrict)
+
+  @@index([tenantId, createdAt])
+  @@index([actorId, createdAt])
 }

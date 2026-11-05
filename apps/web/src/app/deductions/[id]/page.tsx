@@ -3,6 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { DisputeActions } from "@/components/dispute-actions";
+import { GenerateBackCharges } from "@/components/generate-back-charges";
+import { DisputeReview } from "@/components/dispute-review";
+import { formatMoney } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +35,7 @@ export default async function DeductionDetailPage({
 
   const deduction = await prisma.deduction.findFirst({
     where: { id: params.id, tenantId: user.tenant.id },
-    include: { retailer: true, shipment: true }
+    include: { retailer: true, shipment: true, backCharge: true }
   });
 
   if (!deduction) redirect("/deductions");
@@ -41,7 +44,8 @@ export default async function DeductionDetailPage({
     where: { deductionId: deduction.id }
   });
 
-  const canDispute = deduction.status === "READY_TO_DISPUTE";
+  const canDispute = deduction.status === "READY_TO_DISPUTE" &&
+    ["ADMIN", "FINANCE"].includes(user.role);
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-12">
@@ -73,9 +77,7 @@ export default async function DeductionDetailPage({
 
         <div className="rounded-2xl border border-white/10 bg-slate-900/60 px-5 py-4 text-right">
           <p className="text-sm text-slate-400">Deduction Amount</p>
-          <p className="text-3xl font-bold">
-            {"$" + Math.abs(deduction.amount).toLocaleString()}
-          </p>
+          <p className="text-3xl font-bold">{formatMoney(deduction.amount.abs())}</p>
         </div>
       </div>
 
@@ -172,8 +174,55 @@ export default async function DeductionDetailPage({
                 externalId={deduction.externalId}
                 canDispute={canDispute}
                 existingLetter={dispute?.letterHtml ?? null}
+                existingStatus={dispute?.status ?? null}
               />
             </div>
+            {dispute?.status === "PENDING_REVIEW" ? (
+              <DisputeReview
+                disputeId={dispute.id}
+                canReview={["ADMIN", "FINANCE"].includes(user.role) && dispute.requestedById !== user.id}
+              />
+            ) : dispute?.reviewNotes ? (
+              <p className="mt-4 border-t border-white/10 pt-4 text-sm text-slate-400">
+                Review {dispute.status.toLowerCase()}: {dispute.reviewNotes}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-5">
+            <h2 className="text-lg font-semibold text-amber-200">3PL Back-charge</h2>
+            {deduction.backCharge ? (
+              <>
+                <p className="mt-2 text-sm text-amber-100/70">
+                  {deduction.backCharge.memoNumber} · {deduction.backCharge.thirdPartyLogistics} ·{" "}
+                  {formatMoney(deduction.backCharge.amount, deduction.backCharge.currency)}
+                </p>
+                <a
+                  href={`/api/back-charges/${deduction.backCharge.id}`}
+                  className="mt-4 inline-block text-sm text-amber-300 underline underline-offset-2"
+                >
+                  Download debit memo
+                </a>
+                <p className="mt-2 text-xs text-slate-400">
+                  Draft only; it has not been issued or sent.
+                </p>
+              </>
+            ) : deduction.faultParty === "THREE_PL" &&
+              deduction.amount.isNegative() &&
+              deduction.shipment?.thirdPartyLogistics ? (
+              <>
+                <p className="mt-2 text-sm text-slate-300">
+                  Generate a draft debit memo for {deduction.shipment.thirdPartyLogistics}.
+                </p>
+                {["ADMIN", "FINANCE"].includes(user.role) ? (
+                  <div className="mt-4"><GenerateBackCharges deductionId={deduction.id} /></div>
+                ) : null}
+              </>
+            ) : (
+              <p className="mt-2 text-sm text-slate-400">
+                No matched 3PL-attributed charge is eligible for a debit memo.
+              </p>
+            )}
           </div>
         </div>
       </div>
